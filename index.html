@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Human Anatomy Explorer — Comprehensive Medical Edition (12 Systems)</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">
+      <h1>Human Anatomy Explorer</h1>
+      <span class="sub">Medical Student Reference Edition · All 12 Body Systems · 160+ Anatomical Structures</span>
+    </div>
+    <div class="header-actions">
+      <button class="b small" id="toggleAllSys">Show All Systems</button>
+      <button class="b small" id="hideAllSys">Clear All</button>
+    </div>
+  </header>
+
+  <aside id="left">
+    <div class="sec-head">
+      <h2>Body Systems (12)</h2>
+      <span id="visCount" class="count-tag">12 / 12 active</span>
+    </div>
+    <div class="chips" id="chips"></div>
+
+    <div class="sec-head">
+      <h2>Anatomical Structures</h2>
+      <span id="structCount" class="count-tag">0</span>
+    </div>
+    <input type="search" id="q" placeholder="Search bone, muscle, nerve, artery, organ..." aria-label="Search structures">
+    <select id="sysFilter" aria-label="Filter list by system">
+      <option value="all">All Systems in List</option>
+    </select>
+    <ul class="plist" id="plist"></ul>
+  </aside>
+
+  <main>
+    <canvas id="c" aria-label="3D human anatomy model"></canvas>
+    <div id="tip"></div>
+    <div id="bar">
+      <button class="b" id="reset">Reset View</button>
+      <button class="b" id="spin">Auto-Rotate</button>
+      <button class="b on" id="ghost">Body Outline</button>
+      <button class="b" id="labelsToggle">3D Pins</button>
+      <label class="s">Opacity <input type="range" id="op" min="0.1" max="1" step="0.05" value="1" aria-label="Structure opacity"></label>
+      <button class="b pri" id="quizBtn" style="margin-left:auto">Medical Quiz</button>
+    </div>
+  </main>
+
+  <aside id="right"></aside>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="anatomy_data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
