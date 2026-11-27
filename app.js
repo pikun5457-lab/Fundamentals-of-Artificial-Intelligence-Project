@@ -5,14 +5,15 @@ const cv = $('#c'), main = $('main');
 const renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 const scene = new THREE.Scene();
-const cam = new THREE.PerspectiveCamera(40, 1, 0.05, 50);
+const cam = new THREE.PerspectiveCamera(40, 1, 0.01, 50);
 const HOME = new V(0, 0.05, 5.1);
 cam.position.copy(HOME);
 
 const ctl = new THREE.OrbitControls(cam, cv);
 ctl.enableDamping = true;
 ctl.target.set(0, 0, 0);
-ctl.minDistance = 0.45;
+ctl.minDistance = 0.06;   // close enough to inspect small structures (nerves, ossicle-sized parts)
+ctl.screenSpacePanning = true;
 ctl.maxDistance = 9.5;
 
 scene.add(new THREE.HemisphereLight(0xe4eeff, 0x2c2018, 0.95));
@@ -1092,20 +1093,68 @@ const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
 let down = null;
 const vis = o => { while (o) { if (!o.visible) return false; o = o.parent; } return true; };
 
-function pickAt(ev) {
+// Nearest visible surface under the pointer. Translucent shells (skin, breast tissue,
+// lung envelope) are skipped in favour of what is visible behind them.
+function rayHit(ev) {
   const r = cv.getBoundingClientRect();
   mouse.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
   ray.setFromCamera(mouse, cam);
   const targets = pinGroup.visible ? [pinGroup, ...Object.values(sysRoot)] : Object.values(sysRoot);
   const hits = ray.intersectObjects(targets, true).filter(h => vis(h.object) && (!h.object.material || h.object.material.opacity > 0.12));
   if (!hits.length) return null;
-  // Translucent shells (skin, breast tissue, lung envelope) let clicks through to what is visible behind them.
-  const hit = hits.find(h => !h.object.material || h.object.material.opacity >= 0.5) || hits[0];
+  return hits.find(h => !h.object.material || h.object.material.opacity >= 0.5) || hits[0];
+}
+
+function pickAt(ev) {
+  const hit = rayHit(ev);
+  pickAt.part = null;
+  if (!hit) return null;
   let o = hit.object;
   pickAt.part = o.userData.part || null;
   while (o && !o.userData.id) o = o.parent;
   return o ? o.userData.id : null;
 }
+
+/* Zoom toward the cursor (OrbitControls r128 can only zoom toward its fixed target).
+   The point under the cursor stays put on screen: camera and orbit target both scale
+   about it, so the user can zoom into any region and keep orbiting around it. */
+function zoomAnchor(ev) {
+  const hit = rayHit(ev);
+  if (hit) return hit.point.clone();
+  // Empty space: use the plane through the current target, facing the camera.
+  const n = cam.getWorldDirection(new V());
+  const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, ctl.target);
+  return ray.ray.intersectPlane(plane, new V()) || ctl.target.clone();
+}
+function zoomAt(ev, factor) {
+  goalT = null;                                   // cancel any fly-to animation
+  const dist = cam.position.distanceTo(ctl.target);
+  const next = THREE.MathUtils.clamp(dist * factor, ctl.minDistance, ctl.maxDistance);
+  factor = next / dist;
+  if (Math.abs(factor - 1) < 1e-4) return;
+  const a = zoomAnchor(ev);
+  cam.position.sub(a).multiplyScalar(factor).add(a);
+  ctl.target.sub(a).multiplyScalar(factor).add(a);
+  ctl.update();
+}
+// Listen on the parent in the capture phase so OrbitControls never sees the wheel event.
+main.addEventListener('wheel', e => {
+  if (e.target !== cv) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+  // Trackpad pinch arrives as ctrl+wheel with small deltas; make it as responsive as a mouse wheel.
+  const k = e.ctrlKey ? 0.01 : 0.0015;
+  zoomAt(e, Math.exp(THREE.MathUtils.clamp(px, -250, 250) * k));
+}, { passive: false, capture: true });
+
+// Double-click a structure to make that point the centre of rotation.
+cv.addEventListener('dblclick', e => {
+  const hit = rayHit(e);
+  if (!hit) return;
+  goalT = hit.point.clone();
+  goalC = cam.position.clone().add(goalT.clone().sub(ctl.target));
+});
 
 cv.addEventListener('pointerdown', e => down = [e.clientX, e.clientY]);
 cv.addEventListener('pointerup', e => {
