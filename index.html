@@ -12,9 +12,10 @@
   <header>
     <div class="brand">
       <h1>Human Anatomy Explorer</h1>
-      <span class="sub">Medical Student Reference Edition · All 12 Body Systems · 160+ Anatomical Structures</span>
+      <span class="sub" id="subtitle">Medical Student Reference Edition · All 12 Body Systems</span>
     </div>
     <div class="header-actions">
+      <span id="modelStatus" class="count-tag">Schematic model</span>
       <button class="b small" id="toggleAllSys">Show All Systems</button>
       <button class="b small" id="hideAllSys">Clear All</button>
     </div>
@@ -56,6 +57,9 @@
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/meshopt_decoder.js"></script>
+<script src="models/extras.js"></script>
 <script src="anatomy_data.js"></script>
 <script src="app.js"></script>
 </body>

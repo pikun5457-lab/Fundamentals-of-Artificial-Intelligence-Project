@@ -5,14 +5,15 @@ const cv = $('#c'), main = $('main');
 const renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 const scene = new THREE.Scene();
-const cam = new THREE.PerspectiveCamera(40, 1, 0.05, 50);
+const cam = new THREE.PerspectiveCamera(40, 1, 0.01, 50);
 const HOME = new V(0, 0.05, 5.1);
 cam.position.copy(HOME);
 
 const ctl = new THREE.OrbitControls(cam, cv);
 ctl.enableDamping = true;
 ctl.target.set(0, 0, 0);
-ctl.minDistance = 0.45;
+ctl.minDistance = 0.06;   // close enough to inspect small structures (nerves, ossicle-sized parts)
+ctl.screenSpacePanning = true;
 ctl.maxDistance = 9.5;
 
 scene.add(new THREE.HemisphereLight(0xe4eeff, 0x2c2018, 0.95));
@@ -29,7 +30,8 @@ function M(c, o = 1, rough = 0.52) {
     color: c,
     roughness: rough,
     metalness: 0.05,
-    transparent: true,
+    transparent: o < 1,
+    depthWrite: o >= 0.5,
     opacity: o
   });
   m.userData.base = o;
@@ -861,20 +863,25 @@ const pinGroup = new THREE.Group();
 pinGroup.visible = false;
 scene.add(pinGroup);
 const pinGeo = new THREE.SphereGeometry(0.014, 10, 10);
-for (const id in P) {
-  const b = new THREE.Box3().setFromObject(P[id].g);
-  const c = b.getCenter(new V());
-  const pm = new THREE.Mesh(pinGeo, new THREE.MeshBasicMaterial({ color: SYS[P[id].sys][1] }));
-  pm.position.copy(c);
-  pm.userData.id = id;
-  pinGroup.add(pm);
-  P[id].pin = pm;
+function rebuildPins() {
+  pinGroup.children.slice().forEach(pm => { pinGroup.remove(pm); pm.material.dispose(); });
+  for (const id in P) {
+    const b = new THREE.Box3().setFromObject(P[id].g);
+    if (b.isEmpty()) continue;
+    const pm = new THREE.Mesh(pinGeo, new THREE.MeshBasicMaterial({ color: SYS[P[id].sys][1] }));
+    pm.position.copy(b.getCenter(new V()));
+    pm.userData.id = id;
+    pinGroup.add(pm);
+    P[id].pin = pm;
+  }
 }
+rebuildPins();
 
 /* ============================================================================
    UI: SYSTEMS, SEARCH, FILTER, SELECTION & DETAILS
    ============================================================================ */
 let sel = null, isolate = false, quiz = null;
+$('#subtitle').textContent = `Medical Student Reference Edition · All 12 Body Systems · ${Object.keys(P).length} Anatomical Structures`;
 const chips = $('#chips'), sysFilter = $('#sysFilter');
 
 function updateSysCount() {
@@ -1034,6 +1041,10 @@ function renderInfo() {
   const p = P[sel], c = SYS[p.sys];
   r.innerHTML = `<h2>Structure Details</h2>
     <span class="badge" style="--c:${c[1]}">${c[0]} System</span>
+    ${p.real === true ? '<span class="src-tag real" title="Mesh from the BodyParts3D anatomical database">Anatomical mesh</span>'
+      : p.real === 'derived' ? '<span class="src-tag real" title="Generated from BodyParts3D bone/airway geometry">Derived from anatomy data</span>'
+      : p.real === 'placed' ? '<span class="src-tag" title="No BodyParts3D mesh exists for this structure; a simplified shape is positioned on landmarks measured from the real anatomy">Schematic · placed on real landmarks</span>'
+      : '<span class="src-tag" title="No BodyParts3D mesh exists for this structure; shape and position are approximate">Schematic</span>'}
     <h3>${p.name}</h3>
     <div class="latin">${p.latin || ''}</div>
     <p>${p.desc}</p>
@@ -1070,24 +1081,80 @@ $('#labelsToggle').onclick = e => {
   e.target.classList.toggle('on', pinGroup.visible);
 };
 $('#op').oninput = e => {
-  mats.forEach(m => m.opacity = m.userData.base * e.target.value);
+  mats.forEach(m => {
+    m.opacity = m.userData.base * e.target.value;
+    const t = m.opacity < 1;
+    if (t !== m.transparent) { m.transparent = t; m.needsUpdate = true; }
+    m.depthWrite = m.opacity >= 0.5;
+  });
 };
 
 const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
 let down = null;
 const vis = o => { while (o) { if (!o.visible) return false; o = o.parent; } return true; };
 
-function pickAt(ev) {
+// Nearest visible surface under the pointer. Translucent shells (skin, breast tissue,
+// lung envelope) are skipped in favour of what is visible behind them.
+function rayHit(ev) {
   const r = cv.getBoundingClientRect();
   mouse.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
   ray.setFromCamera(mouse, cam);
   const targets = pinGroup.visible ? [pinGroup, ...Object.values(sysRoot)] : Object.values(sysRoot);
   const hits = ray.intersectObjects(targets, true).filter(h => vis(h.object) && (!h.object.material || h.object.material.opacity > 0.12));
   if (!hits.length) return null;
-  let o = hits[0].object;
+  return hits.find(h => !h.object.material || h.object.material.opacity >= 0.5) || hits[0];
+}
+
+function pickAt(ev) {
+  const hit = rayHit(ev);
+  pickAt.part = null;
+  if (!hit) return null;
+  let o = hit.object;
+  pickAt.part = o.userData.part || null;
   while (o && !o.userData.id) o = o.parent;
   return o ? o.userData.id : null;
 }
+
+/* Zoom toward the cursor (OrbitControls r128 can only zoom toward its fixed target).
+   The point under the cursor stays put on screen: camera and orbit target both scale
+   about it, so the user can zoom into any region and keep orbiting around it. */
+function zoomAnchor(ev) {
+  const hit = rayHit(ev);
+  if (hit) return hit.point.clone();
+  // Empty space: use the plane through the current target, facing the camera.
+  const n = cam.getWorldDirection(new V());
+  const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, ctl.target);
+  return ray.ray.intersectPlane(plane, new V()) || ctl.target.clone();
+}
+function zoomAt(ev, factor) {
+  goalT = null;                                   // cancel any fly-to animation
+  const dist = cam.position.distanceTo(ctl.target);
+  const next = THREE.MathUtils.clamp(dist * factor, ctl.minDistance, ctl.maxDistance);
+  factor = next / dist;
+  if (Math.abs(factor - 1) < 1e-4) return;
+  const a = zoomAnchor(ev);
+  cam.position.sub(a).multiplyScalar(factor).add(a);
+  ctl.target.sub(a).multiplyScalar(factor).add(a);
+  ctl.update();
+}
+// Listen on the parent in the capture phase so OrbitControls never sees the wheel event.
+main.addEventListener('wheel', e => {
+  if (e.target !== cv) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+  // Trackpad pinch arrives as ctrl+wheel with small deltas; make it as responsive as a mouse wheel.
+  const k = e.ctrlKey ? 0.01 : 0.0015;
+  zoomAt(e, Math.exp(THREE.MathUtils.clamp(px, -250, 250) * k));
+}, { passive: false, capture: true });
+
+// Double-click a structure to make that point the centre of rotation.
+cv.addEventListener('dblclick', e => {
+  const hit = rayHit(e);
+  if (!hit) return;
+  goalT = hit.point.clone();
+  goalC = cam.position.clone().add(goalT.clone().sub(ctl.target));
+});
 
 cv.addEventListener('pointerdown', e => down = [e.clientX, e.clientY]);
 cv.addEventListener('pointerup', e => {
@@ -1107,7 +1174,8 @@ cv.addEventListener('pointermove', e => {
   const id = pickAt(e);
   if (id && !(quiz && quiz.qs[quiz.i] && quiz.qs[quiz.i].type === 'find' && !quiz.done)) {
     const r = main.getBoundingClientRect();
-    tip.innerHTML = `<b>${P[id].name}</b> · <span style="color:${SYS[P[id].sys][1]}">${SYS[P[id].sys][0]}</span>`;
+    const part = pickAt.part ? `<div class="tip-part">${pickAt.part}</div>` : '';
+    tip.innerHTML = `<b>${P[id].name}</b> · <span style="color:${SYS[P[id].sys][1]}">${SYS[P[id].sys][0]}</span>${part}`;
     tip.style.left = Math.min(r.width - 220, e.clientX - r.left + 14) + 'px';
     tip.style.top = e.clientY - r.top + 14 + 'px';
     tip.style.display = 'block';
@@ -1234,6 +1302,246 @@ function answer(ok, clicked) {
     <div class="row"><button class="b pri" id="next">${quiz.i + 1 >= quiz.qs.length ? 'See Final Score' : 'Next Question'}</button></div>`;
   $('#next').onclick = () => { select(null); quiz.i++; renderQuiz(); };
 }
+
+/* ============================================================================
+   REAL ANATOMICAL MESHES (BodyParts3D, CC BY-SA 2.1 JP)
+   Each system's meshes live in models/<system>.js as a base64 GLB so the app
+   also works from file://. A structure keeps its schematic shape until (and
+   unless) real meshes for it arrive; structures with no BodyParts3D
+   counterpart stay schematic and are flagged as such in the details panel.
+   ============================================================================ */
+function clearGroup(g) {
+  g.children.slice().forEach(c => {
+    g.remove(c);
+    c.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) { const i = mats.indexOf(o.material); if (i >= 0) mats.splice(i, 1); o.material.dispose(); }
+    });
+  });
+}
+function schematicOpacity(id) {
+  let o = 1;
+  P[id].g.traverse(m => { if (m.material && m.material.userData.base !== undefined) o = Math.min(o, m.material.userData.base); });
+  return o;
+}
+// Quantized (KHR_mesh_quantization) positions -> plain floats so normals and raycasts are exact.
+function floatPositions(geo) {
+  const a = geo.attributes.position;
+  if (a.array instanceof Float32Array) return;
+  const div = !a.normalized ? 1 : a.array instanceof Int16Array ? 32767 : a.array instanceof Uint16Array ? 65535 : a.array instanceof Int8Array ? 127 : 255;
+  // r128's getX() returns the raw stored value, so de-normalize by hand (clamping like the GPU does).
+  const f = div === 1 ? v => v : v => Math.max(-1, v / div);
+  const out = new Float32Array(a.count * 3);
+  for (let i = 0; i < a.count; i++) {
+    out[i * 3] = f(a.getX(i));
+    out[i * 3 + 1] = f(a.getY(i));
+    out[i * 3 + 2] = f(a.getZ(i));
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(out, 3));
+}
+
+const realIds = new Set();
+function adoptMesh(mesh) {
+  // GLTFLoader sanitizes node names (spaces -> underscores); restore the readable part name.
+  const [id, rawPart] = mesh.name.split('|');
+  const part = (rawPart || '').replace(/_/g, ' ');
+  const p = P[id];
+  if (!p) return;
+  if (!realIds.has(id)) {
+    p.opacity = schematicOpacity(id);
+    clearGroup(p.g);
+    realIds.add(id);
+    p.real = true;
+  }
+  floatPositions(mesh.geometry);
+  mesh.geometry.deleteAttribute('normal');
+  mesh.geometry.computeVertexNormals();
+  mesh.geometry.computeBoundingSphere();
+  const src = mesh.material;
+  mesh.material = M(src.color.clone().convertLinearToSRGB(), p.opacity, 0.55);
+  src.dispose();
+  mesh.userData.part = part;
+  p.g.attach(mesh);
+}
+
+function addDerivedGeometry() {
+  const X = window.BP3D_EXTRAS;
+  if (!X) return;
+  // Spinal cord & cauda equina along the vertebral canal traced from the real vertebrae
+  if (P.spinal_cord && X.spinal_cord) {
+    const g = P.spinal_cord.g, op = schematicOpacity('spinal_cord');
+    clearGroup(g);
+    const pts = X.spinal_cord.map(c => new V(...c.p));
+    const cordEnd = X.spinal_cord.findIndex(c => /second lumbar/i.test(c.level));
+    const k = cordEnd > 0 ? cordEnd : pts.length - 3;
+    const cord = new THREE.CatmullRomCurve3([pts[0].clone().add(new V(0, 0.05, 0.01)), ...pts.slice(0, k + 1)]);
+    const mc = M(NERVE, op);
+    const m1 = new THREE.Mesh(new THREE.TubeGeometry(cord, 120, 0.0105, 10, false), mc);
+    m1.userData.part = 'Spinal cord (C1–L1/L2)';
+    g.add(m1);
+    const cauda = new THREE.CatmullRomCurve3(pts.slice(k));
+    const m2 = new THREE.Mesh(new THREE.TubeGeometry(cauda, 40, 0.006, 8, false), M(0xe9c46a, op));
+    m2.userData.part = 'Cauda equina';
+    g.add(m2);
+    P.spinal_cord.real = 'derived';
+  }
+  // Nail plates on the dorsal tips of each real distal phalanx
+  if (P.nails && X.nails) {
+    const g = P.nails.g, op = schematicOpacity('nails');
+    clearGroup(g);
+    const m = M(0xf7cad0, op);
+    X.nails.forEach(n => {
+      const e = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), m);
+      e.position.set(...n.p);
+      const w = Math.max(0.004, n.w * 0.42), l = Math.max(0.005, n.len * 0.55), t = 0.0022;
+      if (n.toe) e.scale.set(w, t, l); else e.scale.set(w, l, t);
+      e.userData.part = n.name.replace('Distal phalanx of', 'Nail of');
+      g.add(e);
+    });
+    P.nails.real = 'derived';
+  }
+  // Lung envelopes: convex hull around the real bronchopulmonary tree (approximate pleural surface)
+  if (P.lungs_pleura && X.lungs) {
+    const m = M(0xf2a6b8, 0.3, 0.8);
+    m.side = THREE.DoubleSide;
+    for (const side in X.lungs) {
+      const L = X.lungs[side];
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(L.v.flat(), 3));
+      geo.setIndex(L.f.flat());
+      geo.computeVertexNormals();
+      const mesh = new THREE.Mesh(geo, m);
+      mesh.userData.part = `${side === 'left' ? 'Left' : 'Right'} lung (approximate envelope)`;
+      P.lungs_pleura.g.add(mesh);
+    }
+  }
+  placeSchematics(X);
+}
+
+// Structures with no BodyParts3D mesh: simple shapes, but positioned on landmarks measured
+// from the real meshes (see tools/bp3d/landmarks.py), so they sit where they belong.
+function placeSchematics() {
+  const PL = window.BP3D_PLACED || {};
+  const up = new V(0, 1, 0);
+  for (const id in PL) {
+    const p = P[id];
+    if (!p || p.real === true) continue;
+    const op = schematicOpacity(id);
+    clearGroup(p.g);
+    const matFor = {};
+    const mat = c => matFor[c] || (matFor[c] = M(c, op));
+    const spec = PL[id];
+    (spec.tubes || []).forEach(t => {
+      const curve = new THREE.CatmullRomCurve3(t.pts.map(q => new V(...q)));
+      const m = new THREE.Mesh(new THREE.TubeGeometry(curve, Math.max(24, t.pts.length * 10), t.flat ? t.r * 0.75 : t.r, 8, false), mat(t.c));
+      m.userData.part = t.part;
+      p.g.add(m);
+    });
+    (spec.ells || []).forEach(e => {
+      const m = new THREE.Mesh(new THREE.SphereGeometry(1, 18, 12), mat(e.c));
+      m.position.set(...e.p);
+      m.scale.set(...e.s);
+      if (e.dir) m.quaternion.setFromUnitVectors(up, new V(...e.dir).normalize());
+      m.userData.part = e.part;
+      p.g.add(m);
+    });
+    (spec.rings || []).forEach(r => {
+      const m = new THREE.Mesh(new THREE.TorusGeometry(r.r, r.tube, 10, 40), mat(r.c));
+      m.position.set(...r.p);
+      m.scale.set(r.sx || 1, r.sy || 1, 0.45);   // flattened against the face
+      m.userData.part = r.part;
+      p.g.add(m);
+    });
+    (spec.meshes || []).forEach(s => {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(s.v.flat(), 3));
+      geo.setIndex(s.f.flat());
+      geo.computeVertexNormals();
+      const mm = mat(s.c);
+      if (s.double) mm.side = THREE.DoubleSide;
+      const m = new THREE.Mesh(geo, mm);
+      m.userData.part = s.part;
+      p.g.add(m);
+    });
+    p.real = 'placed';
+  }
+  // Internal oblique & transversus abdominis: the real external oblique sheet, offset inward along its normals.
+  if (P.intobl && realIds.has('extobl') && P.intobl.real !== true) {
+    const op = schematicOpacity('intobl');
+    clearGroup(P.intobl.g);
+    P.extobl.g.children.forEach(src => {
+      const geo = src.geometry.clone();
+      const pos = geo.attributes.position, nor = geo.attributes.normal;
+      const sc = src.scale.x || 1;   // offsets are in world units; geometry may be in quantized local units
+      for (let i = 0; i < pos.count; i++) {
+        pos.setXYZ(i, pos.getX(i) - nor.getX(i) * 0.012 / sc, pos.getY(i) - nor.getY(i) * 0.012 / sc, pos.getZ(i) - nor.getZ(i) * 0.012 / sc);
+      }
+      geo.computeVertexNormals();
+      const m = new THREE.Mesh(geo, M(new THREE.Color(MUS).offsetHSL(0, 0, -0.06), op));
+      m.applyMatrix4(src.matrix);
+      m.userData.part = src.userData.part.replace('external oblique', 'internal oblique & transversus abdominis (approx.)');
+      P.intobl.g.add(m);
+    });
+    P.intobl.real = 'placed';
+  }
+}
+
+const modelStatus = $('#modelStatus');
+function setStatus(t) { if (modelStatus) modelStatus.textContent = t; }
+
+function loadRealModels() {
+  const systems = window.BP3D_SYSTEMS || [];
+  if (!systems.length || !THREE.GLTFLoader || typeof MeshoptDecoder === 'undefined') {
+    setStatus('Schematic model (real meshes unavailable)');
+    return;
+  }
+  const loader = new THREE.GLTFLoader();
+  loader.setMeshoptDecoder(MeshoptDecoder);
+  let done = 0;
+  const finish = () => {
+    if (++done < systems.length) { setStatus(`Loading anatomy… ${done}/${systems.length}`); return; }
+    addDerivedGeometry();
+    if (realIds.has('epidermis_dermis')) {
+      // Rebuild the faint body outline from the real skin surface so it matches the anatomy.
+      const gm = ghost.children[0] && ghost.children[0].material;
+      ghost.children.slice().forEach(c => { ghost.remove(c); c.geometry.dispose(); });
+      P.epidermis_dermis.g.children.forEach(s => {
+        const o = new THREE.Mesh(s.geometry, gm);
+        o.applyMatrix4(s.matrix);
+        ghost.add(o);
+      });
+    }
+    rebuildPins();
+    applyIsolate();
+    if (sel) { glow(sel, true); if (!quiz) renderInfo(); }
+    const all = Object.values(P);
+    const n = t => all.filter(p => p.real === t).length;
+    const schem = all.length - n(true) - n('derived');
+    setStatus(`BodyParts3D · ${n(true)} real meshes · ${n('derived')} derived · ${schem} schematic`);
+    if (modelStatus) modelStatus.title = 'Real: BodyParts3D anatomical meshes. Derived: generated from those meshes. ' +
+      'Schematic: no mesh exists, a simplified shape is placed on measured landmarks.';
+  };
+  setStatus(`Loading anatomy… 0/${systems.length}`);
+  systems.forEach(k => {
+    const s = document.createElement('script');
+    s.src = `models/${k}.js`;
+    s.onload = () => {
+      const b64 = window.BP3D_MODELS[k];
+      const bin = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      delete window.BP3D_MODELS[k];
+      loader.parse(bin.buffer, '', gltf => {
+        gltf.scene.updateMatrixWorld(true);
+        const meshes = [];
+        gltf.scene.traverse(o => { if (o.isMesh) meshes.push(o); });
+        meshes.forEach(adoptMesh);
+        finish();
+      }, err => { console.error('Model', k, err); finish(); });
+    };
+    s.onerror = () => { console.error('Missing model file', k); finish(); };
+    document.body.appendChild(s);
+  });
+}
+loadRealModels();
 
 /* ============================================================================
    RENDER LOOP
