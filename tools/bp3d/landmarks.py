@@ -369,11 +369,67 @@ for Side, s in SIDES:
     topr = ram[ram[:, 1] > ram[:, 1].max() - 0.03]
     coronoid = topr[np.argmax(topr[:, 2])]
     add('temporalis', 'tubes', part=f'{Side} temporalis tendon → coronoid process', pts=[r3(fc + np.array([0, -0.03, 0.01])), r3((fc + coronoid) / 2 + np.array([s * 0.004, 0, 0])), r3(coronoid + np.array([0, 0.006, 0]))], r=0.008, c=MUS)
-    # Orbicularis oculi around the orbit, centred on the real eyeball
-    sc = V(f'{Side} sclera'); c = sc.mean(0)
-    add('orb_oculi', 'rings', part=f'{Side} orbicularis oculi', p=r3([c[0], c[1], sc[:, 2].max() - 0.004]), r=0.03, tube=0.0065, sx=1.15, sy=0.85, c=MUS)
-lip = V('Lip'); lc = lip.mean(0)
-add('orb_oris', 'rings', part='Orbicularis oris', p=r3([0, lc[1], lip[:, 2].max() - 0.008]), r=float(np.ptp(lip[:, 0]) / 2 * 0.9), tube=0.007, sx=1.0, sy=0.55, c=MUS)
+
+# --------------------------------------------------------------------------- facial sphincters
+# Orbicularis oculi / oris are thin sheets just deep to the skin. Cut the matching region out of the
+# real facial skin and push it inward along the skin normals, so the sheet follows the face exactly.
+_skin_v, _skin_f = (lambda vf: (to_app(vf[0]), vf[1]))(load_obj(find(byname['Skin'][0])))
+_fn = np.cross(_skin_v[_skin_f[:, 1]] - _skin_v[_skin_f[:, 0]], _skin_v[_skin_f[:, 2]] - _skin_v[_skin_f[:, 0]])
+_vn = np.zeros_like(_skin_v)
+for k in range(3):
+    np.add.at(_vn, _skin_f[:, k], _fn)
+_vn /= np.linalg.norm(_vn, axis=1, keepdims=True) + 1e-12
+_fn /= np.linalg.norm(_fn, axis=1, keepdims=True) + 1e-12
+
+_face_bones = cKDTree(np.concatenate([V(n) for n in ['Frontal bone', 'Mandible', 'Left maxilla', 'Right maxilla', 'Left zygomatic bone',
+                                                     'Right zygomatic bone', 'Left nasal bone', 'Right nasal bone', 'Left lacrimal bone',
+                                                     'Right lacrimal bone', 'Left temporal bone', 'Right temporal bone']]))
+
+def skin_sheet(sid, part, region, depth, colour, min_nz=0.05):
+    """Faces of the real skin whose centroid lies in region(points)->mask, pushed inward along the skin
+    normal by `depth` -- but never more than halfway to the nearest facial bone, so the sheet stays
+    between skin and skeleton where the soft tissue is thin (orbital rim, cheekbone)."""
+    cen = _skin_v[_skin_f].mean(1)
+    keep = region(cen) & (_fn[:, 2] > min_nz)
+    F = _skin_f[keep]
+    if not len(F):
+        print('WARNING: empty skin sheet for', part); return
+    used = np.unique(F); remap = -np.ones(len(_skin_v), int); remap[used] = np.arange(len(used))
+    gap = _face_bones.query(_skin_v[used])[0]
+    d = np.clip(np.minimum(depth, gap * 0.5), 0.0006, None)
+    v = _skin_v[used] - _vn[used] * d[:, None]
+    add(sid, 'meshes', part=part, v=[r3(p) for p in v], f=remap[F].tolist(), c=colour, double=True)
+
+def ell_r(v, c, rx, ry_up, ry_dn):
+    dx = (v[:, 0] - c[0]) / rx
+    dy = (v[:, 1] - c[1]) / np.where(v[:, 1] > c[1], ry_up, ry_dn)
+    return np.sqrt(dx ** 2 + dy ** 2)
+
+for Side, s in SIDES:
+    up = V(f'Tarsal plate of {Side.lower()} upper eyelid'); lo = V(f'Tarsal plate of {Side.lower()} lower eyelid')
+    # palpebral fissure: between the two tarsal plates; width = tarsal plate span (~25 mm)
+    fc = np.array([(up[:, 0].mean() + lo[:, 0].mean()) / 2, (up[:, 1].min() + lo[:, 1].max()) / 2, up[:, 2].max()])
+    half_w = (max(np.ptp(up[:, 0]), np.ptp(lo[:, 0]))) / 2
+    front = lambda v, c=fc: v[:, 2] > c[2] - 0.045
+    medial_ok = lambda v: s * v[:, 0] > 0.012           # stops at the medial canthus / nasal bridge
+    fis = lambda v, c=fc, w=half_w: ell_r(v, c, w * 0.92, 0.0035, 0.0035) > 1
+    # palpebral part: within the lids, out to the orbital margin (~20 mm horizontally, ~17 mm vertically)
+    pal = lambda v, c=fc: ell_r(v, c, 0.044, 0.036, 0.03) <= 1
+    # orbital part: over the orbital rim, up to the brow and down onto the cheek (~32 x 28 mm)
+    orb = lambda v, c=fc: ell_r(v, c, 0.068, 0.062, 0.05) <= 1
+    skin_sheet('orb_oculi', f'{Side} orbicularis oculi – palpebral part (eyelids)',
+               lambda v: front(v) & medial_ok(v) & fis(v) & pal(v), 0.003, 0xd0675a, min_nz=-0.35)
+    skin_sheet('orb_oculi', f'{Side} orbicularis oculi – orbital part',
+               lambda v: front(v) & medial_ok(v) & ~pal(v) & orb(v), 0.0035, MUS)
+
+lip = V('Lip')
+lc = np.array([0.0, lip[:, 1].mean(), lip[:, 2].max()])
+lw = np.ptp(lip[:, 0]) / 2                            # half mouth width (~25 mm)
+# within the lips, from just below the nose (subnasale) to the labiomental groove, past the corners to the modiolus
+oris_out = lambda v: ell_r(v, lc, lw + 0.02, 0.04, 0.036) <= 1
+oral_fissure = lambda v: ell_r(v, lc, lw * 0.85, 0.0025, 0.0025) > 1
+not_nose = lambda v: (v[:, 2] < lc[2] + 0.012) & (v[:, 2] > lc[2] - 0.06)
+skin_sheet('orb_oris', 'Orbicularis oris (sphincter of the lips)', lambda v: oris_out(v) & oral_fissure(v) & not_nose(v), 0.006, MUS)
 
 json.dump(out, open(os.path.join(OUT, 'placed.json'), 'w'), separators=(',', ':'))
 for k, v in out.items():
