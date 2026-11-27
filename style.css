@@ -209,6 +209,17 @@ input[type=range] { accent-color: var(--acc); width: 90px; }
   font-size: 11.5px;
   font-weight: 700;
 }
+.src-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  border: 1px dashed var(--mut);
+  color: var(--mut);
+  font-size: 11px;
+}
+.src-tag.real { border-style: solid; border-color: var(--acc); color: var(--acc); }
+.tip-part { color: var(--mut); font-size: 11px; }
 #right h3 { font: 700 21px "Fraunces", Georgia, serif; margin: 8px 0 4px; line-height: 1.25; }
 .latin { font-style: italic; color: var(--mut); font-size: 13px; margin-bottom: 10px; }
 #right p { color: #d0d8e3; margin: 8px 0; font-size: 13.5px; }
